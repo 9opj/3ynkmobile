@@ -226,7 +226,7 @@ def network_status() -> dict:
         if ipv4:
             adapters.append({"name": name, "ipv4": ipv4, "is_up": bool(status and status.isup), "speed_mbps": status.speed if status else None})
     return {"adapters": adapters, "bytes_sent": current.bytes_sent, "bytes_received": current.bytes_recv,
-            "send_bytes_per_second": round(sent_rate), "receive_bytes_per_second": round(received_rate), "local_only": True}
+              "send_bytes_per_second": round(sent_rate), "receive_bytes_per_second": round(received_rate), "local_only": True}
 
 
 def applications() -> list[dict]:

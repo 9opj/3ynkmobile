@@ -1,8 +1,12 @@
 import json
+import http.client
 import os
+import queue
+import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import unittest
 import urllib.parse
@@ -12,6 +16,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+import services
 
 
 class LocalServiceTests(unittest.TestCase):
@@ -23,10 +28,12 @@ class LocalServiceTests(unittest.TestCase):
         env = os.environ.copy()
         env["PC_CONTROL_PORT"] = str(cls.port)
         env["PC_CONTROL_NO_BROWSER"] = "1"
+        cls.output = queue.Queue()
         cls.process = subprocess.Popen(
-            [sys.executable, str(ROOT / "app.py")], cwd=ROOT, env=env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            [sys.executable, "-u", str(ROOT / "app.py")], cwd=ROOT, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
         )
+        threading.Thread(target=lambda: [cls.output.put(line.rstrip()) for line in cls.process.stdout], daemon=True).start()
         cls.base = f"http://127.0.0.1:{cls.port}"
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -37,7 +44,11 @@ class LocalServiceTests(unittest.TestCase):
                 if cls.process.poll() is not None:
                     raise AssertionError("service exited before it became ready")
                 time.sleep(0.05)
-        raise AssertionError("service did not become ready")
+        lines = []
+        while True:
+            try: lines.append(cls.output.get_nowait())
+            except queue.Empty: break
+        raise AssertionError(f"service did not become ready (exit={cls.process.poll()}, output={lines})")
 
     @classmethod
     def tearDownClass(cls):
@@ -53,8 +64,9 @@ class LocalServiceTests(unittest.TestCase):
             payload = json.load(response)
             self.assertEqual(response.status, 200)
             self.assertEqual(payload["status"], "ok")
-            self.assertEqual(payload["host"], "127.0.0.1")
+            self.assertEqual(payload["host"], "0.0.0.0")
             self.assertEqual(payload["port"], self.port)
+            self.assertIn("lan_addresses", payload)
             self.assertGreaterEqual(payload["uptime_seconds"], 0)
 
     def test_home_page_and_assets_are_served(self):
@@ -123,6 +135,47 @@ class LocalServiceTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as result:
             urllib.request.urlopen(self.base + "/api/files/list?" + path, timeout=3)
         self.assertEqual(result.exception.code, 403)
+
+    def test_phone_lan_pairing_and_authenticated_api(self):
+        lan_ip = next(item["ipv4"] for item in services.network_status()["adapters"]
+                      if item["is_up"] and item["ipv4"].startswith(("10.", "172.", "192.168.")))
+        lines = []
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                line = self.output.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            lines.append(line)
+            match = re.search(r"Phone pairing code \(valid for this run\): ([A-Z2-9]{8})", line)
+            if match:
+                code = match.group(1)
+                break
+        else:
+            self.fail("service did not print its phone pairing code")
+
+        def request(path, body=None, token=None):
+            connection = http.client.HTTPConnection(lan_ip, self.port, timeout=5, source_address=(lan_ip, 0))
+            headers = {"Host": f"{lan_ip}:{self.port}", "Origin": f"http://{lan_ip}:{self.port}"}
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+                body = json.dumps(body).encode()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            connection.request("POST" if body is not None else "GET", path, body=body, headers=headers)
+            response = connection.getresponse()
+            result = json.loads(response.read())
+            connection.close()
+            return response.status, result
+
+        status, _ = request("/api/monitor")
+        self.assertEqual(status, 401)
+        status, paired = request("/api/pair", {"code": code.lower()})
+        self.assertEqual(status, 200)
+        self.assertTrue(paired["token"])
+        status, monitor = request("/api/monitor", token=paired["token"])
+        self.assertEqual(status, 200)
+        self.assertIn("cpu_percent", monitor)
 
 
 if __name__ == "__main__":

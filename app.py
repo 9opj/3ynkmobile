@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import ipaddress
+import secrets
+import hmac
 import mimetypes
 import threading
 import webbrowser
@@ -19,10 +22,25 @@ import openrgb_service
 
 ROOT = Path(__file__).resolve().parent
 WEB_ROOT = ROOT / "web"
-HOST = "127.0.0.1"
+HOST = "0.0.0.0"
 PORT_WAS_CONFIGURED = "PC_CONTROL_PORT" in os.environ
 PORT = int(os.environ.get("PC_CONTROL_PORT", "8765"))
 STARTED_AT = time.time()
+PAIRING_CODE = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(8))
+_sessions: dict[str, tuple[str, float]] = {}
+_failed_pairing: dict[str, int] = {}
+_session_lock = threading.Lock()
+SESSION_TTL = 12 * 60 * 60
+
+
+def lan_ipv4_addresses() -> list[str]:
+    try:
+        return sorted({item["ipv4"] for item in services.network_status()["adapters"]
+                       if item.get("is_up") and item.get("ipv4")
+                       and ipaddress.ip_address(item["ipv4"]).is_private
+                       and not ipaddress.ip_address(item["ipv4"]).is_loopback})
+    except (OSError, ValueError, KeyError):
+        return []
 
 
 class LocalServer(ThreadingHTTPServer):
@@ -37,9 +55,40 @@ class Handler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(WEB_ROOT), **kwargs)
 
     def _valid_host(self) -> bool:
-        return self.headers.get("Host", "").lower() in {
-            f"localhost:{PORT}", f"127.0.0.1:{PORT}", f"[::1]:{PORT}"
-        }
+        host = self.headers.get("Host", "").lower()
+        allowed = {f"localhost:{PORT}", f"127.0.0.1:{PORT}", f"[::1]:{PORT}"}
+        allowed.update(f"{address}:{PORT}" for address in lan_ipv4_addresses())
+        return host in allowed
+
+    def _is_loopback(self) -> bool:
+        try:
+            return ipaddress.ip_address(self.client_address[0]).is_loopback
+        except ValueError:
+            return False
+
+    def _private_peer(self) -> bool:
+        try:
+            peer = ipaddress.ip_address(self.client_address[0])
+            return peer.version == 4 and peer.is_private and not peer.is_loopback
+        except ValueError:
+            return False
+
+    def _authorized(self) -> bool:
+        if self._is_loopback():
+            return True
+        if not self._private_peer():
+            return False
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return False
+        token = auth[7:]
+        now = time.time()
+        with _session_lock:
+            for key, (_, expires) in list(_sessions.items()):
+                if expires <= now:
+                    _sessions.pop(key, None)
+            entry = _sessions.get(token)
+            return bool(entry and entry[0] == self.client_address[0] and entry[1] > now)
 
     def _json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -92,7 +141,12 @@ class Handler(SimpleHTTPRequestHandler):
                 "host": HOST,
                 "port": PORT,
                 "uptime_seconds": max(0, int(time.time() - STARTED_AT)),
+                "lan_addresses": lan_ipv4_addresses(),
+                "auth_required": not self._is_loopback(),
             })
+            return
+        if path.startswith("/api/") and not self._authorized():
+            self._json(401, {"error": "pairing_required"})
             return
         query = parse_qs(urlparse(self.path).query)
         try:
@@ -152,11 +206,41 @@ class Handler(SimpleHTTPRequestHandler):
         if not self._valid_host():
             self._json(403, {"error": "host_not_allowed"})
             return
-        expected_origins = {f"http://localhost:{PORT}", f"http://127.0.0.1:{PORT}"}
+        host = self.headers.get("Host", "").lower()
+        expected_origins = {f"http://{host}"}
         if self.headers.get("Origin") not in expected_origins:
             self._json(403, {"error": "origin_not_allowed"})
             return
         path = urlparse(self.path).path
+        if path == "/api/pair":
+            if self._is_loopback() or not self._private_peer():
+                self._json(403, {"error": "lan_pairing_only"})
+                return
+            peer = self.client_address[0]
+            with _session_lock:
+                attempts = _failed_pairing.get(peer, 0)
+                if attempts >= 5:
+                    self._json(429, {"error": "pairing_locked_until_restart"})
+                    return
+            try:
+                body = self._request_json(1024)
+            except (ValueError, OverflowError):
+                self._json(400, {"error": "invalid_request"})
+                return
+            if not hmac.compare_digest(str(body.get("code", "")).strip().upper(), PAIRING_CODE):
+                with _session_lock:
+                    _failed_pairing[peer] = _failed_pairing.get(peer, 0) + 1
+                self._json(403, {"error": "invalid_pairing_code"})
+                return
+            token = secrets.token_urlsafe(32)
+            with _session_lock:
+                _sessions[token] = (peer, time.time() + SESSION_TTL)
+                _failed_pairing.pop(peer, None)
+            self._json(200, {"token": token, "expires_in": SESSION_TTL})
+            return
+        if path.startswith("/api/") and not self._authorized():
+            self._json(401, {"error": "pairing_required"})
+            return
         supported_paths = {"/api/control", "/api/files/upload", "/api/files/create-folder", "/api/files/rename", "/api/files/delete", "/api/files/copy", "/api/files/move", "/api/screenshot", "/api/apps/launch", "/api/rgb/brightness", "/api/rgb/effect", "/api/rgb/cycle", "/api/rgb/enabled", "/api/openrgb/profile"}
         if path not in supported_paths:
             self._json(404, {"error": "not_found"})
@@ -244,9 +328,17 @@ def main() -> None:
         except OSError as error:
             last_error = error
     else:
-        raise OSError(f"No available localhost port in the selected range beginning at {PORT}") from last_error
+        raise OSError(f"No available LAN port in the selected range beginning at {PORT}") from last_error
     url = f"http://localhost:{PORT}"
-    print(f"PC Control is available at {url}")
+    print(f"PC Control is available at {url}", flush=True)
+    addresses = lan_ipv4_addresses()
+    if addresses:
+        print("Open one of these addresses on your phone on the same Wi-Fi:", flush=True)
+        for address in addresses:
+            print(f"  http://{address}:{PORT}", flush=True)
+        print(f"Phone pairing code (valid for this run): {PAIRING_CODE}", flush=True)
+    else:
+        print("No private LAN address found; phone access is unavailable until connected to Wi-Fi/Ethernet.", flush=True)
     if os.environ.get("PC_CONTROL_NO_BROWSER") != "1":
         threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
     try:

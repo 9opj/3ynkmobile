@@ -4,6 +4,15 @@ const translations = {
 };
 let language = localStorage.getItem('pc-control-language') || 'ar';
 let lastHealth = null;
+const LAN_TOKEN_KEY = '3ynk-lan-token';
+const isLanBrowser = !['localhost','127.0.0.1','[::1]'].includes(location.hostname);
+const apiHeaders = () => isLanBrowser && localStorage.getItem(LAN_TOKEN_KEY) ? {'Authorization':`Bearer ${localStorage.getItem(LAN_TOKEN_KEY)}`} : {};
+function showPairDialog(message=''){
+  if(!isLanBrowser)return;
+  $('pair-feedback').textContent=message;
+  $('pair-backdrop').hidden=false;
+  setTimeout(()=>$('pair-code').focus(),0);
+}
 let applicationCatalog = null;
 let commandReturnFocus = null;
 const $ = id => document.getElementById(id);
@@ -75,7 +84,7 @@ function updateHealthUI() {
   $('service-tag').textContent = online ? t.connected : (lastHealth === null ? 'يفحص الخدمة' : t.offline);
   $('retry-health').innerHTML = `${t.check} <span>↻</span>`;
   if (online) {
-    $('bind-address').textContent = `${lastHealth.host}:${lastHealth.port}`;
+    $('bind-address').textContent = `${lastHealth.lan_addresses?.[0]||'localhost'}:${lastHealth.port}`;
     const seconds = lastHealth.uptime_seconds;
     const days = Math.floor(seconds / 86400), hours = Math.floor(seconds % 86400 / 3600), minutes = Math.floor(seconds % 3600 / 60);
     $('uptime').textContent = days ? `${days}${t.up} ${hours}${t.hours}` : hours ? `${hours}${t.hours} ${minutes}${t.minutes}` : `${minutes}${t.minutes} ${seconds % 60}${t.seconds}`;
@@ -89,6 +98,7 @@ async function checkHealth() {
     const body = await response.json();
     if (body.status !== 'ok') throw new Error('service unhealthy');
     lastHealth = body;
+    if(body.auth_required&&!localStorage.getItem(LAN_TOKEN_KEY))showPairDialog();
   } catch { lastHealth = false; }
   updateHealthUI();
 }
@@ -151,6 +161,16 @@ $('retry-health').addEventListener('click', checkHealth);
 setLanguage(language);
 checkHealth();
 setInterval(checkHealth, 5000);
+$('pair-form').addEventListener('submit',async event=>{
+  event.preventDefault();const button=$('pair-submit');button.disabled=true;$('pair-feedback').textContent='جارٍ التحقق من الرمز…';
+  try{
+    const response=await fetch('/api/pair',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:$('pair-code').value}),cache:'no-store'});
+    const result=await response.json();if(!response.ok)throw new Error(result.error||'pairing_failed');
+    localStorage.setItem(LAN_TOKEN_KEY,result.token);$('pair-backdrop').hidden=true;$('pair-code').value='';
+    await checkHealth();showPage(location.hash.slice(1)||'home',false);
+  }catch(error){const messages={invalid_pairing_code:'رمز الاقتران غير صحيح.',pairing_locked_until_restart:'توقفت المحاولات لهذا الهاتف. أعد تشغيل البرنامج للحصول على رمز جديد.'};showPairDialog(messages[error.message]||`تعذر الاقتران: ${error.message}`);}
+  finally{button.disabled=false;}
+});
 
 // Theme, workspace placement, density and home card preferences are stored locally.
 function applyPreferences() {
@@ -213,14 +233,16 @@ document.querySelectorAll('#workspace-grid [data-widget]').forEach(widget => {
 applyPreferences();
 
 async function getJson(url) {
-  const response = await fetch(url, {cache:'no-store'});
+  const response = await fetch(url, {cache:'no-store',headers:apiHeaders()});
   const data = await response.json();
+  if(response.status===401){showPairDialog('انتهت صلاحية ربط الهاتف. أدخل رمز الاقتران مجددًا.');throw new Error('pairing_required');}
   if (!response.ok) throw new Error(data.error || 'request_failed');
   return data;
 }
 async function postJson(url, body) {
-  const response = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), cache:'no-store'});
+  const response = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json',...apiHeaders()}, body:JSON.stringify(body), cache:'no-store'});
   const data = await response.json();
+  if(response.status===401){showPairDialog('انتهت صلاحية ربط الهاتف. أدخل رمز الاقتران مجددًا.');throw new Error('pairing_required');}
   if (!response.ok) throw new Error(data.error || 'request_failed');
   return data;
 }
@@ -293,7 +315,7 @@ document.addEventListener('keydown',event=>{
 });
 function uploadJson(url, body) {
   return new Promise((resolve,reject)=>{
-    const xhr=new XMLHttpRequest();xhr.open('POST',url);xhr.setRequestHeader('Content-Type','application/json');
+    const xhr=new XMLHttpRequest();xhr.open('POST',url);xhr.setRequestHeader('Content-Type','application/json');for(const [key,value] of Object.entries(apiHeaders()))xhr.setRequestHeader(key,value);
     xhr.upload.onprogress=event=>{if(event.lengthComputable)$('files-feedback').textContent=`جارٍ الرفع… ${Math.round(event.loaded/event.total*100)}%`;};
     xhr.onload=()=>{let result={};try{result=JSON.parse(xhr.responseText);}catch{}if(xhr.status>=200&&xhr.status<300)resolve(result);else reject(new Error(result.error||'upload_failed'));};
     xhr.onerror=()=>reject(new Error('network_error'));xhr.send(JSON.stringify(body));
@@ -318,9 +340,16 @@ async function loadMonitors() {
     if (streaming) refreshScreen();
   } catch (error) { $('screen-meta').textContent = `تعذر قراءة الشاشات: ${error.message}`; }
 }
-function refreshScreen() {
+let screenObjectUrl = null;
+async function refreshScreen() {
   if (!streaming) return;
-  $('screen-image').src = `/api/screen?monitor=${selectedMonitor}&t=${Date.now()}`;
+  try{
+    const response=await fetch(`/api/screen?monitor=${selectedMonitor}&t=${Date.now()}`,{cache:'no-store',headers:apiHeaders()});
+    if(response.status===401){showPairDialog('انتهت صلاحية ربط الهاتف. أدخل رمز الاقتران مجددًا.');return;}
+    if(!response.ok)throw new Error('screen_capture_failed');
+    const blob=await response.blob(),url=URL.createObjectURL(blob),image=$('screen-image');
+    image.src=url;if(screenObjectUrl)URL.revokeObjectURL(screenObjectUrl);screenObjectUrl=url;
+  }catch(error){$('screen-meta').textContent=`تعذر التقاط الشاشة: ${error.message}`;}
 }
 $('monitor-select').addEventListener('change', () => { selectedMonitor = Number($('monitor-select').value); refreshScreen(); });
 $('stream-toggle').addEventListener('click', () => {
@@ -333,7 +362,7 @@ $('stream-toggle').addEventListener('click', () => {
   if (screenFpsTimer) clearInterval(screenFpsTimer);
   if (streaming) { screenFrames=0; refreshScreen(); screenTimer = setInterval(refreshScreen, 700); screenFpsTimer=setInterval(()=>{if(streaming)$('screen-meta').textContent=`المعاينة مباشرة · ${screenFrames} إطار/ث تقريبًا · localhost`;screenFrames=0;},1000); }
 });
-function stopScreenPreview(){streaming=false;if(screenTimer)clearInterval(screenTimer);if(screenFpsTimer)clearInterval(screenFpsTimer);screenTimer=screenFpsTimer=null;$('screen-image').hidden=true;$('screen-placeholder').hidden=false;$('stream-toggle').textContent='بدء المعاينة';$('screen-meta').textContent='المعاينة متوقفة';}
+function stopScreenPreview(){streaming=false;if(screenTimer)clearInterval(screenTimer);if(screenFpsTimer)clearInterval(screenFpsTimer);screenTimer=screenFpsTimer=null;$('screen-image').hidden=true;$('screen-placeholder').hidden=false;if(screenObjectUrl){URL.revokeObjectURL(screenObjectUrl);screenObjectUrl=null;}$('stream-toggle').textContent='بدء المعاينة';$('screen-meta').textContent='المعاينة متوقفة';}
 $('screen-image').addEventListener('load',()=>{if(streaming)screenFrames++;});
 $('screen-image').addEventListener('error', () => { $('screen-meta').textContent = 'تعذر التقاط الشاشة.'; });
 $('save-screenshot').addEventListener('click', async () => {
@@ -487,7 +516,7 @@ async function refreshHomeCapabilities(){
     ['files','/api/files/roots',data=>`${data.roots.length} مجلدات متاحة للتصفح`],
     ['monitor','/api/monitor',data=>`CPU ${Math.round(data.cpu_percent)}% · RAM ${Math.round(data.memory.percent)}% · ${data.disks.length} أقراص`],
     ['apps','/api/apps',data=>`${data.applications.length} اختصارًا قابلًا للتشغيل`],
-    ['network','/api/network',data=>`${data.adapters.filter(adapter=>adapter.is_up).length} واجهات نشطة · ${data.local_only?'localhost فقط':'محلي'}`],
+    ['network','/api/network',data=>`${data.adapters.filter(adapter=>adapter.is_up).length} واجهات نشطة · LAN محلي`],
     ['lighting','/api/rgb',data=>data.api_access?(data.current?.name||'SignalRGB جاهز'):data.pro_required?'SignalRGB متصل · واجهة التحكم تتطلب Pro':data.running?'SignalRGB يعمل لكن API غير متاحة':'SignalRGB غير متصل']
   ];
   try{
@@ -537,18 +566,18 @@ $('shortcut-task-manager').addEventListener('click',async()=>{try{await postJson
 
 async function refreshNetwork(){
   try{const [data,measured]=await Promise.all([getJson('/api/network'),(async()=>{const started=performance.now();const health=await getJson('/api/health');return {health,latency:Math.round(performance.now()-started)};})()]);const health=measured.health;
-    $('network-service').textContent='متصل';$('network-address').textContent=`${health.host}:${health.port} · localhost فقط`;
+    $('network-service').textContent='متصل';$('network-address').textContent=health.lan_addresses?.length?health.lan_addresses.map(address=>`http://${address}:${health.port}`).join(' · '):`http://localhost:${health.port}`;
     $('network-latency').textContent=`زمن استجابة Health Check: ${measured.latency} ms`;
     $('network-received').textContent=formatBytes(data.bytes_received);$('network-sent').textContent=formatBytes(data.bytes_sent);
     $('network-receive-rate').textContent=`الاستقبال: ${formatBytes(data.receive_bytes_per_second)}/ث`;$('network-send-rate').textContent=`الإرسال: ${formatBytes(data.send_bytes_per_second)}/ث`;
     const active=data.adapters.filter(adapter=>adapter.is_up);$('adapter-count').textContent=`${active.length} نشط من ${data.adapters.length}`;
     $('network-advice-title').textContent=active.length?'واجهات الشبكة تعمل':'لا توجد واجهة شبكة نشطة';
-    $('network-advice-text').textContent=active.length?`اكتشف Windows ${active.length} واجهة نشطة. هذه الصفحة تعرض حالة الشبكة على الكمبيوتر ومؤشرات النقل؛ الخدمة نفسها تبقى على localhost.`:'تحقق من اتصال Wi‑Fi أو Ethernet من إعدادات Windows. الخدمة المحلية ستبقى متاحة على هذا الكمبيوتر.';
+    $('network-advice-text').textContent=active.length?`اتصل من هاتفك على Wi‑Fi نفسه بفتح ${health.lan_addresses?.[0]?`http://${health.lan_addresses[0]}:${health.port}`:'عنوان IPv4 للكمبيوتر'} ثم أدخل رمز الربط الظاهر في نافذة البرنامج.`:'تحقق من اتصال Wi‑Fi أو Ethernet من إعدادات Windows ثم أعد تشغيل الخدمة.';
     $('adapter-list').replaceChildren(...data.adapters.map(adapter=>{const card=document.createElement('article');card.className='card adapter-card';const title=document.createElement('strong');title.textContent=adapter.name;const detail=document.createElement('p');detail.textContent=`${adapter.ipv4} · ${adapter.is_up?'نشط':'غير نشط'}${adapter.speed_mbps?` · ${adapter.speed_mbps} Mbps`:''}`;card.append(title,detail);return card;}));
   }catch(error){$('network-service').textContent=`غير متاح: ${error.message}`;$('network-advice-title').textContent='تعذر قراءة حالة الشبكة';$('network-advice-text').textContent=`${error.message} · جرّب تحديث الحالة أو تحقق من تشغيل الخدمة المحلية.`;}
 }
 $('refresh-network').addEventListener('click',refreshNetwork);
-$('copy-network-address').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(`http://localhost:${lastHealth?.port||8765}`);$('network-feedback').textContent='نُسخ عنوان الخدمة المحلية.';}catch{$('network-feedback').textContent='تعذر النسخ من المتصفح؛ العنوان هو http://localhost:8765';}});
+$('copy-network-address').addEventListener('click',async()=>{const address=`http://${lastHealth?.lan_addresses?.[0]||'localhost'}:${lastHealth?.port||8765}`;try{await navigator.clipboard.writeText(address);$('network-feedback').textContent=`نُسخ عنوان الاتصال: ${address}`;}catch{$('network-feedback').textContent=`عنوان الاتصال: ${address}`;}});
 
 async function refreshSignalRGB(){
   $('rgb-status-title').textContent=language==='ar'?'جارٍ الاتصال بـ SignalRGB…':'Checking SignalRGB…';
@@ -625,10 +654,11 @@ async function runAction(action, data = {}) {
   feedback.classList.remove('error');
   try {
     const response = await fetch('/api/control', {
-      method:'POST', headers:{'Content-Type':'application/json'},
+      method:'POST', headers:{'Content-Type':'application/json',...apiHeaders()},
       body:JSON.stringify({action, data}), cache:'no-store'
     });
     const result = await response.json();
+    if(response.status===401)showPairDialog('انتهت صلاحية ربط الهاتف. أدخل رمز الاقتران مجددًا.');
     if (!response.ok) throw new Error(result.error || 'تعذر تنفيذ الطلب');
     feedback.textContent = result.status === 'accepted' ? 'تم قبول الطلب.' : 'تم تنفيذ الطلب.';
   } catch (error) {

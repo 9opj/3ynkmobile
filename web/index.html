@@ -87,7 +87,7 @@
           <a class="card capability-card" href="#files" data-capability="files"><div class="capability-top"><span>الملفات</span><span class="status-tag" data-capability-state>يفحص…</span></div><strong data-capability-detail>جارٍ فحص المجلدات</strong><small>تصفح مقيد بمجلدات المستخدم</small></a>
           <a class="card capability-card" href="#monitor" data-capability="monitor"><div class="capability-top"><span>مراقبة الجهاز</span><span class="status-tag" data-capability-state>يفحص…</span></div><strong data-capability-detail>جارٍ قراءة الموارد</strong><small>قراءات حية من Windows</small></a>
           <a class="card capability-card" href="#apps" data-capability="apps"><div class="capability-top"><span>التطبيقات</span><span class="status-tag" data-capability-state>يفحص…</span></div><strong data-capability-detail>جارٍ اكتشاف الاختصارات</strong><small>اختصارات فعلية من قائمة ابدأ</small></a>
-          <a class="card capability-card" href="#network" data-capability="network"><div class="capability-top"><span>الشبكة</span><span class="status-tag" data-capability-state>يفحص…</span></div><strong data-capability-detail>جارٍ قراءة الواجهات</strong><small>حالة الجهاز · الخدمة localhost فقط</small></a>
+          <a class="card capability-card" href="#network" data-capability="network"><div class="capability-top"><span>الشبكة</span><span class="status-tag" data-capability-state>يفحص…</span></div><strong data-capability-detail>جارٍ قراءة الواجهات</strong><small>حالة الاتصال المحلي وعنوان الكمبيوتر</small></a>
           <a class="card capability-card" href="#lighting" data-capability="lighting"><div class="capability-top"><span>إضاءة الكمبيوتر</span><span class="status-tag" data-capability-state>يفحص…</span></div><strong data-capability-detail>جارٍ فحص SignalRGB</strong><small>خدمة محلية فقط · بلا تغيير تلقائي</small></a>
         </div>
         <p id="capability-checked-at" class="capability-footnote" role="status">يعرض هذا الفحص نتيجة كل واجهة خدمة فعلية، وليس حالة شكلية.</p>
@@ -134,7 +134,7 @@
       </section>
 
       <section class="page hidden" id="page-network">
-        <div class="page-intro"><div class="eyebrow">localhost فقط</div><h2>الشبكة</h2><p>الخدمة لا تستمع على شبكة Wi-Fi ولا تفعّل اتصال iPhone عبر LAN.</p></div>
+        <div class="page-intro"><div class="eyebrow">اتصال محلي مقترن</div><h2>الشبكة</h2><p>افتح عنوان الكمبيوتر من هاتف على شبكة Wi‑Fi نفسها، ثم أدخل رمز الاقتران المطبوع في نافذة البرنامج.</p></div>
         <div class="section-heading network-actions"><div><div class="eyebrow">حالة مباشرة</div><h2>اتصال هذا الكمبيوتر</h2></div><div><button class="secondary-button" id="refresh-network">تحديث الحالة</button> <button class="secondary-button" id="copy-network-address">نسخ عنوان الخدمة</button></div></div>
         <div class="grid network-grid"><article class="card"><div class="eyebrow">الخدمة المحلية</div><h3 id="network-service">—</h3><p id="network-address">—</p><p id="network-latency">زمن الاستجابة: —</p></article><article class="card"><div class="eyebrow">إجمالي الاستقبال</div><h3 id="network-received">—</h3><p id="network-receive-rate">—</p></article><article class="card"><div class="eyebrow">إجمالي الإرسال</div><h3 id="network-sent">—</h3><p id="network-send-rate">—</p></article></div>
         <div class="card network-advice"><span class="card-icon blue">⌁</span><div><strong id="network-advice-title">جارٍ فحص الواجهات</strong><p id="network-advice-text">—</p></div></div>
@@ -191,6 +191,14 @@
       <div class="command-caption"><strong id="command-title">ماذا تريد أن تفعل؟</strong><span>بحث محلي سريع</span></div>
       <div class="command-results" id="command-results" role="listbox" aria-label="نتائج البحث"></div>
       <div class="command-foot"><span>↑↓ للتنقل</span><span><kbd>Enter</kbd> فتح <kbd>Esc</kbd> إغلاق</span></div>
+    </section>
+  </div>
+  <div class="pair-backdrop" id="pair-backdrop" hidden>
+    <section class="pair-dialog" role="dialog" aria-modal="true" aria-labelledby="pair-title">
+      <span class="eyebrow">3YNK · اتصال محلي</span><h2 id="pair-title">اربط جوالك بالكمبيوتر</h2>
+      <p>تأكد أن الهاتف والكمبيوتر على شبكة Wi‑Fi نفسها. أدخل رمز الاقتران الظاهر في نافذة البرنامج على Windows.</p>
+      <form id="pair-form"><label for="pair-code">رمز الاقتران</label><input id="pair-code" name="code" inputmode="text" autocomplete="one-time-code" maxlength="8" required placeholder="مثال: A2BC7DEF"><button class="primary-button" id="pair-submit" type="submit">ربط هذا الهاتف</button><p id="pair-feedback" role="status" aria-live="polite"></p></form>
+      <small>الاتصال مخصص لشبكة خاصة موثوقة. لا تستخدمه على Wi‑Fi عام.</small>
     </section>
   </div>
   <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
