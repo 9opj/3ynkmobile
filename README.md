@@ -31,10 +31,10 @@ python app.py
 يحتاج البناء PyInstaller 6.18.0 والحزم المذكورة أعلاه. شغّل من جذر المشروع:
 
 ```powershell
-python -m PyInstaller --noconfirm --clean --onefile --console --name 3ynk-mobile-20261024c --add-data "web;web" --distpath outputs --workpath work\pyinstaller-3ynk-mobile-20261024c --specpath . app.py
+python -m PyInstaller --noconfirm --clean --onefile --console --name 3ynk-mobile-lan-20261024b --add-data "web;web" --distpath outputs --workpath work\pyinstaller-3ynk-mobile-lan-20261024b --specpath . app.py
 ```
 
-الملف الناتج `outputs\3ynk-mobile-20261024c.exe` يضم Python وملفات الواجهة والحزم المكتشفة. شُغّل وتحقق على جهاز التطوير الحالي؛ لم يُختبر على جهاز Windows آخر.
+الملف الناتج `outputs\3ynk-mobile-lan-20261024b.exe` يضم Python وملفات الواجهة والحزم المكتشفة. شُغّل وتحقق على جهاز التطوير الحالي؛ لم يُختبر على جهاز Windows آخر.
 
 ## استخدام الهاتف والاستضافة
 

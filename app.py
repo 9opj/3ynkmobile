@@ -7,6 +7,7 @@ import os
 import ipaddress
 import secrets
 import hmac
+import socket
 import mimetypes
 import threading
 import webbrowser
@@ -35,10 +36,19 @@ SESSION_TTL = 12 * 60 * 60
 
 def lan_ipv4_addresses() -> list[str]:
     try:
-        return sorted({item["ipv4"] for item in services.network_status()["adapters"]
-                       if item.get("is_up") and item.get("ipv4")
-                       and ipaddress.ip_address(item["ipv4"]).is_private
-                       and not ipaddress.ip_address(item["ipv4"]).is_loopback})
+        addresses = {item["ipv4"] for item in services.network_status()["adapters"]
+                     if item.get("is_up") and item.get("ipv4")
+                     and ipaddress.ip_address(item["ipv4"]).is_private
+                     and not ipaddress.ip_address(item["ipv4"]).is_loopback
+                     and not ipaddress.ip_address(item["ipv4"]).is_link_local}
+        preferred = None
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                probe.connect(("192.0.2.1", 80))
+                preferred = probe.getsockname()[0]
+        except OSError:
+            pass
+        return ([preferred] if preferred in addresses else []) + sorted(addresses - ({preferred} if preferred else set()))
     except (OSError, ValueError, KeyError):
         return []
 
